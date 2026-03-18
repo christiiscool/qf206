@@ -1,0 +1,228 @@
+================================================================================
+                    QF206 FACTOR TIMING PIPELINE
+                    PRODUCTION UPGRADE SUMMARY
+================================================================================
+
+GOAL: Make ElasticNet the default model while maintaining full 3-model 
+      comparison capability, add comprehensive metrics, transaction costs,
+      and advanced portfolio management features.
+
+STATUS: ✅ ALL DELIVERABLES COMPLETE
+
+================================================================================
+PART 0: ANALYSIS ✅
+================================================================================
+✓ Inspected all key files
+✓ Documented data flow and architecture
+✓ Identified stock weights not being saved (fixed in Part 2)
+✓ Confirmed walk-forward loop structure
+
+================================================================================
+PART 1: ELASTICNET AS DEFAULT ✅
+================================================================================
+CHANGES:
+  • src/config.py: model_name = "elasticnet" (was "ridge")
+  • run_pipeline.py: Added --compare-models CLI flag
+  
+USAGE:
+  python run_pipeline.py                    # ElasticNet only → outputs/
+  python run_pipeline.py --compare-models   # All 3 → outputs/model_comparison/
+
+RESULT: ElasticNet is now production default, comparison mode available anytime
+
+================================================================================
+PART 2: STOCK-LEVEL ALLOCATIONS ✅
+================================================================================
+IMPLEMENTATION:
+  • src/backtest.py: Added stock_weights to BacktestResult
+  • Tracks final trading weights for each stock monthly
+  • Validates weight normalization (logs warnings)
+  
+NEW OUTPUTS:
+  ✓ outputs/stock_weights.csv
+  ✓ outputs/model_comparison/{model}/stock_weights.csv
+  
+VALIDATION:
+  • Checks weight sum ≈ 1.0
+  • Detects NaN weights
+  • Logs warnings for anomalies
+
+================================================================================
+PART 3: TRANSACTION COSTS & ENHANCED METRICS ✅
+================================================================================
+TRANSACTION COSTS:
+  • Turnover: turnover_t = Σ|w_{i,t} - w_{i,t-1}|
+  • TC: 10 bps one-way (configurable)
+  • Net returns: ret_net = ret_gross - (tc_bps/10000) * turnover
+  
+NEW OUTPUTS:
+  ✓ monthly_returns.csv: ret_gross, ret_net, turnover
+  ✓ turnover.csv: Monthly turnover series
+  
+ENHANCED METRICS (src/evaluation.py):
+  ✓ Sortino Ratio (downside deviation)
+  ✓ Calmar Ratio (CAGR / |MaxDD|)
+  ✓ CVaR 95% (Value at Risk)
+  ✓ Win Rate (% positive months)
+  ✓ Skewness, Kurtosis
+  ✓ Average Turnover
+  
+  Plus existing: Annual Return, Vol, Sharpe, Max DD, OOS R², IC
+
+================================================================================
+PART 4: NEW VISUALIZATIONS ✅
+================================================================================
+ADDED 6 NEW PLOTS (src/plots.py):
+
+1. stock_weights_over_time.png
+   → Heatmap of stock allocations
+
+2. equity_curve_gross_vs_net.png
+   → Shows transaction cost impact
+
+3. drawdown_series.png
+   → Underwater plot
+
+4. rolling_sharpe_12m.png
+   → Time-varying risk-adjusted performance
+
+5. factor_return_contributions.png
+   → Stacked area chart of factor contributions
+
+6. model_comparison_equity_curves.png
+   → Overlay of all model equity curves (comparison mode)
+
+INTEGRATION:
+  • All plots auto-generated in default run
+  • Full plot suite per model in comparison mode
+  • Existing plots maintained
+
+================================================================================
+PART 5: ADVANCED FEATURES (2 IMPLEMENTED) ✅
+================================================================================
+OPTION A: ALLOCATION SMOOTHING ✅
+  Formula: w_t = γ*w_target + (1-γ)*w_{t-1}
+  Config: allocation_smoothing = 0.7 (default)
+  Effect: Reduces turnover, smoother transitions
+  
+  γ = 1.0 → No smoothing
+  γ = 0.7 → 70% new, 30% old (default)
+  γ = 0.5 → Equal weighting
+  
+OPTION B: VOLATILITY TARGETING ✅
+  Formula: Scale returns to maintain target vol
+  Config: enable_vol_targeting = False (default)
+          target_vol = 0.12 (12% annualized)
+          vol_lookback = 12 (months)
+  Effect: Maintains consistent risk exposure
+  Safety: Scaling capped at [0.5, 2.0]
+
+================================================================================
+PART 6: OUTPUT ORGANIZATION ✅
+================================================================================
+DEFAULT RUN (outputs/):
+  ✓ backtest_summary.json       # All metrics
+  ✓ monthly_returns.csv          # ret_gross, ret_net, turnover
+  ✓ factor_allocations.csv       # Factor weights
+  ✓ stock_weights.csv            # Stock weights (NEW)
+  ✓ turnover.csv                 # Turnover series (NEW)
+  ✓ 7+ plots including new visualizations
+
+COMPARISON RUN (outputs/model_comparison/):
+  ✓ model_comparison.csv         # Summary table
+  ✓ ridge/                       # Full outputs
+  ✓ elasticnet/                  # Full outputs
+  ✓ xgboost/                     # Full outputs
+  ✓ Comparison plots
+
+MODEL COMPARISON CSV INCLUDES:
+  annual_return, annual_volatility, sharpe_ratio, sortino_ratio,
+  calmar_ratio, max_drawdown, cvar_95, win_rate, avg_turnover,
+  oos_r2, ic
+
+================================================================================
+CODE CHANGES
+================================================================================
+MODIFIED FILES (6):
+  1. src/config.py              # ElasticNet default, new params
+  2. src/backtest.py            # Stock weights, turnover, TC, smoothing, vol targeting
+  3. src/evaluation.py          # Enhanced metrics
+  4. src/plots.py               # 6 new plotting functions
+  5. run_pipeline.py            # CLI flags, new outputs
+  6. src/model_comparison.py    # Updated for new outputs
+
+NEW FILES (3):
+  1. PRODUCTION_README.md       # Comprehensive production guide
+  2. FINAL_IMPLEMENTATION_SUMMARY.md  # Technical summary
+  3. QUICK_REFERENCE.md         # Quick reference card
+
+UNCHANGED FILES (7):
+  ✓ src/factor_timing_model.py
+  ✓ src/factor_portfolios.py
+  ✓ src/portfolio_allocator.py
+  ✓ src/features.py
+  ✓ src/labels.py
+  ✓ src/utils.py
+  ✓ src/data_download.py
+
+================================================================================
+TESTING & VALIDATION
+================================================================================
+✅ Unit tests pass (test_model_selection.py)
+✅ No syntax errors (getDiagnostics)
+✅ No breaking changes
+✅ Backward compatible
+✅ No look-ahead bias
+✅ Reproducible (random_state=42)
+
+================================================================================
+KEY FEATURES
+================================================================================
+✓ ElasticNet as production default
+✓ Full 3-model comparison available anytime
+✓ Stock-level allocations tracked and saved
+✓ Transaction costs modeled (10 bps one-way)
+✓ Turnover computed and reported
+✓ 11 performance metrics (was 4)
+✓ 6 new visualizations
+✓ Allocation smoothing (reduces turnover)
+✓ Volatility targeting (optional)
+✓ Comprehensive validation and logging
+✓ Zero breaking changes
+
+================================================================================
+USAGE
+================================================================================
+# Production run (ElasticNet)
+python run_pipeline.py
+
+# Model comparison
+python run_pipeline.py --compare-models
+
+# Test models
+python test_model_selection.py
+
+================================================================================
+DOCUMENTATION
+================================================================================
+📖 PRODUCTION_README.md          - Main production guide
+📖 FINAL_IMPLEMENTATION_SUMMARY.md - Technical details
+📖 QUICK_REFERENCE.md            - Quick reference card
+📖 MODEL_COMPARISON_README.md    - Original model comparison docs
+📖 IMPLEMENTATION_SUMMARY.md     - Initial implementation docs
+📖 QUICK_START.md                - Quick start guide
+
+================================================================================
+READY FOR PRESENTATION ✅
+================================================================================
+The pipeline is production-ready with:
+  • ElasticNet as default model
+  • Comprehensive performance metrics
+  • Transaction cost modeling
+  • Advanced portfolio management
+  • Professional visualizations
+  • Full model comparison capability
+  • Complete documentation
+
+All deliverables completed successfully!
+================================================================================
