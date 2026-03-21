@@ -15,7 +15,13 @@ from .factor_timing_model import (
     predict_factor_returns,
     train_factor_timing_model,
 )
-from .options_warning_signals import add_market_stress_confirmation, build_options_warning_signals
+from .options_overlay import build_monthly_put_hedge_book
+from .options_signal_data import load_wrds_options_export
+from .options_warning_signals import (
+    add_market_stress_confirmation,
+    add_warning_score,
+    build_monthly_options_indicators,
+)
 from .portfolio_allocator import combine_factor_and_stock_weights, compute_factor_allocations
 from .utils import get_logger
 
@@ -32,6 +38,7 @@ class BacktestResult:
     turnover_series: pd.Series
     overlay_turnover_series: pd.Series
     options_signals: pd.DataFrame
+    put_hedge_book: pd.DataFrame
 
 
 def _compute_vol_scalar(history: list[float], cfg: PipelineConfig) -> float:
@@ -48,31 +55,54 @@ def _compute_vol_scalar(history: list[float], cfg: PipelineConfig) -> float:
     return float(np.clip(vol_scalar, 0.5, 2.0))
 
 
-def _load_options_signals(cfg: PipelineConfig, spy_daily: pd.DataFrame) -> pd.DataFrame:
+def _load_options_context(cfg: PipelineConfig, spy_daily: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     logger = get_logger()
     if not cfg.options_risk.enabled:
-        return pd.DataFrame(columns=["month_end", "warning_flag", "warning_score", "lambda_t"])
+        empty = pd.DataFrame(columns=["month_end", "warning_flag", "warning_score", "lambda_t"])
+        return empty, pd.DataFrame(), pd.DataFrame()
     if cfg.options_risk.options_data_path is None:
         raise ValueError("Options risk overlay enabled but no options_data_path is configured.")
 
-    options_signals = build_options_warning_signals(Path(cfg.options_risk.options_data_path), cfg.options_risk)
+    options_df = load_wrds_options_export(Path(cfg.options_risk.options_data_path), cfg.options_risk)
+    monthly_indicators = build_monthly_options_indicators(options_df, cfg.options_risk)
+    options_signals = add_warning_score(monthly_indicators, cfg.options_risk)
     options_signals = add_market_stress_confirmation(options_signals, spy_daily, cfg.options_risk)
+    put_hedge_book, put_hedge_daily = build_monthly_put_hedge_book(options_df, spy_daily, cfg.options_risk)
+    if not put_hedge_book.empty:
+        options_signals = options_signals.merge(
+            put_hedge_book[
+                [
+                    "month_end",
+                    "signal_date",
+                    "optionid",
+                    "exdate",
+                    "strike_price",
+                    "entry_mid",
+                    "exit_date",
+                    "exit_value",
+                    "option_unit_total_return",
+                    "exit_reason",
+                ]
+            ],
+            on="month_end",
+            how="left",
+        )
     logger.info("Loaded options warning signals with %d monthly observations", len(options_signals))
-    return options_signals
+    return options_signals, put_hedge_book, put_hedge_daily
 
 
 def _overlay_scenarios(cfg: PipelineConfig) -> Dict[str, float]:
     scenarios = {
-        "under_hedged": float(cfg.options_risk.under_hedge_haircut),
-        "fixed_overlay": float(cfg.options_risk.warning_haircut),
-        "over_hedged": float(cfg.options_risk.over_hedge_haircut),
+        "under_hedged": float(cfg.options_risk.under_hedge_budget_pct_nav),
+        "fixed_overlay": float(cfg.options_risk.fixed_hedge_budget_pct_nav),
+        "over_hedged": float(cfg.options_risk.over_hedge_budget_pct_nav),
     }
 
-    for haircut in cfg.options_risk.hedge_sweep_haircuts:
-        label = f"hedge_{int(round(float(haircut) * 100)):02d}"
-        scenarios[label] = float(haircut)
+    for budget in cfg.options_risk.hedge_sweep_budget_pct_nav:
+        label = f"put_budget_{int(round(float(budget) * 10000)):03d}bp"
+        scenarios[label] = float(budget)
 
-    return dict(sorted(scenarios.items(), key=lambda item: item[1], reverse=True))
+    return dict(sorted(scenarios.items(), key=lambda item: item[1]))
 
 
 def _compute_vol_benchmark_lambda(base_history: list[float], cfg: PipelineConfig) -> float:
@@ -88,11 +118,39 @@ def _compute_vol_benchmark_lambda(base_history: list[float], cfg: PipelineConfig
     return float(np.clip(raw_lambda, cfg.options_risk.vol_benchmark_min_lambda, 1.0))
 
 
+def _build_option_daily_contributions(
+    put_hedge_daily: pd.DataFrame,
+    monthly_returns: pd.DataFrame,
+    scenario_budget_columns: Dict[str, str],
+) -> Dict[str, pd.Series]:
+    if put_hedge_daily is None or put_hedge_daily.empty:
+        return {scenario: pd.Series(dtype=float) for scenario in scenario_budget_columns}
+
+    hedge_daily = put_hedge_daily.copy()
+    hedge_daily["month_end"] = pd.to_datetime(hedge_daily["month_end"])
+    hedge_daily["date"] = pd.to_datetime(hedge_daily["date"])
+
+    contributions: Dict[str, pd.Series] = {}
+    for scenario_name, budget_col in scenario_budget_columns.items():
+        if budget_col not in monthly_returns.columns:
+            contributions[scenario_name] = pd.Series(dtype=float)
+            continue
+
+        budget_map = monthly_returns[budget_col]
+        scenario_df = hedge_daily.copy()
+        scenario_df["budget"] = scenario_df["month_end"].map(budget_map).fillna(0.0)
+        scenario_df["scenario_option_pnl"] = scenario_df["option_unit_pnl"] * scenario_df["budget"]
+        contributions[scenario_name] = scenario_df.groupby("date")["scenario_option_pnl"].sum().sort_index()
+
+    return contributions
+
+
 def _build_daily_scenario_returns(
     cfg: PipelineConfig,
     monthly_returns: pd.DataFrame,
     daily_prices: Optional[pd.DataFrame],
     scenario_stock_weights: Dict[str, pd.DataFrame],
+    option_daily_contributions: Optional[Dict[str, pd.Series]] = None,
 ) -> pd.DataFrame:
     if daily_prices is None or daily_prices.empty:
         return pd.DataFrame()
@@ -142,6 +200,10 @@ def _build_daily_scenario_returns(
                 .sum(axis=1)
             )
 
+            if option_daily_contributions and scenario_name in option_daily_contributions:
+                option_slice = option_daily_contributions[scenario_name].reindex(daily_portfolio.index).fillna(0.0)
+                daily_portfolio = daily_portfolio.add(option_slice, fill_value=0.0)
+
             total_cost = float(monthly_returns.at[month, turnover_col]) * tc_rate
             if regime_cost_col is not None and regime_cost_col in monthly_returns.columns:
                 total_cost += float(monthly_returns.at[month, regime_cost_col])
@@ -174,8 +236,8 @@ def run_walk_forward_backtest(
     """
     Walk-forward backtest for dynamic factor allocation on the 6-stock universe.
 
-    The options signal acts only as a regime-aware risk overlay by scaling the
-    equity portfolio exposure through lambda_t.
+    The options signal sizes a monthly SPY put hedge funded out of portfolio
+    capital, while preserving the walk-forward equity allocation process.
     """
     logger = get_logger()
 
@@ -188,11 +250,15 @@ def run_walk_forward_backtest(
     regime_features = build_regime_features(spy_daily)
     X, Y = build_factor_timing_dataset(factor_returns, regime_features)
 
-    options_signals = _load_options_signals(cfg, spy_daily)
+    options_signals, put_hedge_book, put_hedge_daily = _load_options_context(cfg, spy_daily)
     options_signals = options_signals.copy()
     if not options_signals.empty:
         options_signals["month_end"] = pd.to_datetime(options_signals["month_end"])
         options_signals = options_signals.set_index("month_end").sort_index()
+    if not put_hedge_book.empty:
+        put_hedge_book = put_hedge_book.copy()
+        put_hedge_book["month_end"] = pd.to_datetime(put_hedge_book["month_end"])
+        put_hedge_book = put_hedge_book.set_index("month_end").sort_index()
 
     months = sorted(X.index.unique())
     start = pd.to_datetime(cfg.backtest.test_start)
@@ -288,14 +354,29 @@ def run_walk_forward_backtest(
         warning_row = options_signals.loc[month] if month in options_signals.index else None
         warning_flag = int(warning_row["warning_flag"]) if warning_row is not None and pd.notna(warning_row["warning_flag"]) else 0
         warning_score = float(warning_row["warning_score"]) if warning_row is not None and pd.notna(warning_row["warning_score"]) else np.nan
-        fixed_lambda_t = float(warning_row["lambda_t"]) if warning_row is not None and pd.notna(warning_row["lambda_t"]) else 1.0
-        score_scaled_lambda_t = (
-            float(warning_row["score_scaled_lambda_t"])
-            if warning_row is not None and "score_scaled_lambda_t" in warning_row.index and pd.notna(warning_row["score_scaled_lambda_t"])
-            else 1.0
+        fixed_hedge_budget = (
+            float(warning_row["fixed_hedge_budget"])
+            if warning_row is not None and "fixed_hedge_budget" in warning_row.index and pd.notna(warning_row["fixed_hedge_budget"])
+            else 0.0
         )
+        fixed_lambda_t = 1.0 - fixed_hedge_budget
+        score_scaled_hedge_budget = (
+            float(warning_row["score_scaled_hedge_budget"])
+            if warning_row is not None and "score_scaled_hedge_budget" in warning_row.index and pd.notna(warning_row["score_scaled_hedge_budget"])
+            else 0.0
+        )
+        score_scaled_lambda_t = 1.0 - score_scaled_hedge_budget
         vol_benchmark_lambda_t = _compute_vol_benchmark_lambda(base_returns_history, cfg)
-        hybrid_overlay_lambda_t = min(vol_benchmark_lambda_t, vol_benchmark_lambda_t * score_scaled_lambda_t)
+        hybrid_overlay_lambda_t = vol_benchmark_lambda_t * score_scaled_lambda_t
+        option_trade_row = put_hedge_book.loc[month] if not put_hedge_book.empty and month in put_hedge_book.index else None
+        if isinstance(option_trade_row, pd.DataFrame):
+            option_trade_row = option_trade_row.iloc[0]
+        option_unit_total_return = (
+            float(option_trade_row["option_unit_total_return"])
+            if option_trade_row is not None and pd.notna(option_trade_row["option_unit_total_return"])
+            else 0.0
+        )
+        option_trade_available = int(option_trade_row is not None)
         record = {
             "month_end": month,
             "ret_gross": base_ret_gross,
@@ -304,10 +385,14 @@ def run_walk_forward_backtest(
             "warning_flag": warning_flag,
             "warning_score": warning_score,
             "base_vol_scalar": base_vol_scalar,
+            "fixed_overlay_hedge_budget": fixed_hedge_budget,
             "fixed_overlay_lambda_t": fixed_lambda_t,
+            "score_scaled_hedge_budget": score_scaled_hedge_budget,
             "score_scaled_lambda_t": score_scaled_lambda_t,
             "vol_benchmark_lambda_t": vol_benchmark_lambda_t,
             "hybrid_overlay_lambda_t": hybrid_overlay_lambda_t,
+            "put_option_trade_available": option_trade_available,
+            "put_option_unit_total_return": option_unit_total_return,
         }
 
         if prev_unhedged_weights is not None:
@@ -321,9 +406,17 @@ def run_walk_forward_backtest(
         if warning_flag != prev_warning_flag:
             regime_switch_cost = cfg.options_risk.state_change_cost_bps / 10000.0
 
+        scenario_budgets = {
+            **{
+                scenario_name: (budget if warning_flag == 1 and option_trade_available == 1 else 0.0)
+                for scenario_name, budget in overlay_scenarios.items()
+            },
+            "score_scaled": score_scaled_hedge_budget if option_trade_available == 1 else 0.0,
+            "vol_benchmark": 0.0,
+            "hybrid_overlay": score_scaled_hedge_budget if option_trade_available == 1 else 0.0,
+        }
         scenario_lambdas = {
-            **{scenario_name: haircut if warning_flag == 1 else 1.0 for scenario_name, haircut in overlay_scenarios.items()},
-            "score_scaled": score_scaled_lambda_t,
+            **{scenario_name: 1.0 - budget for scenario_name, budget in scenario_budgets.items() if scenario_name != "vol_benchmark"},
             "vol_benchmark": vol_benchmark_lambda_t,
             "hybrid_overlay": hybrid_overlay_lambda_t,
         }
@@ -339,13 +432,19 @@ def run_walk_forward_backtest(
             else:
                 scenario_turnover = scenario_weights.abs().sum()
 
-            scenario_ret_gross = (scenario_weights.reindex(fwd.index).fillna(0.0) * fwd).sum()
+            stock_ret_gross = (scenario_weights.reindex(fwd.index).fillna(0.0) * fwd).sum()
+            option_budget = float(scenario_budgets.get(scenario_name, 0.0))
+            option_ret_gross = option_budget * option_unit_total_return
+            scenario_ret_gross = stock_ret_gross + option_ret_gross
             scenario_tc = (cfg.backtest.transaction_cost_bps / 10000.0) * scenario_turnover
             scenario_ret_net_pre_vol = scenario_ret_gross - scenario_tc - regime_switch_cost
             scenario_vol_scalar = _compute_vol_scalar(scenario_returns_history[scenario_name], cfg)
             scenario_ret_net = scenario_ret_net_pre_vol * scenario_vol_scalar
 
             record[f"{scenario_name}_lambda_t"] = scenario_lambda
+            record[f"{scenario_name}_hedge_budget"] = option_budget
+            record[f"{scenario_name}_stock_ret_gross"] = stock_ret_gross
+            record[f"{scenario_name}_option_ret_gross"] = option_ret_gross
             record[f"{scenario_name}_ret_gross"] = scenario_ret_gross
             record[f"{scenario_name}_ret_net"] = scenario_ret_net
             record[f"{scenario_name}_turnover"] = scenario_turnover
@@ -359,6 +458,7 @@ def run_walk_forward_backtest(
         record["ret_net_overlay"] = record["fixed_overlay_ret_net"]
         record["overlay_turnover"] = record["fixed_overlay_turnover"]
         record["lambda_t"] = record["fixed_overlay_lambda_t"]
+        record["hedge_budget"] = record["fixed_overlay_hedge_budget"]
         record["regime_switch_cost"] = record["fixed_overlay_regime_switch_cost"]
         record["overlay_vol_scalar"] = record["fixed_overlay_vol_scalar"]
 
@@ -402,7 +502,29 @@ def run_walk_forward_backtest(
             scenario_df = pd.DataFrame(index=monthly_returns.index, columns=cfg.demo_tickers)
         scenario_stock_weights_df[scenario_name] = scenario_df
 
-    daily_returns = _build_daily_scenario_returns(cfg, monthly_returns, daily_prices, scenario_stock_weights_df)
+    option_daily_contributions = _build_option_daily_contributions(
+        put_hedge_daily,
+        monthly_returns,
+        {
+            "under_hedged": "under_hedged_hedge_budget",
+            "fixed_overlay": "fixed_overlay_hedge_budget",
+            "over_hedged": "over_hedged_hedge_budget",
+            "score_scaled": "score_scaled_hedge_budget",
+            "hybrid_overlay": "hybrid_overlay_hedge_budget",
+            **{
+                scenario_name: f"{scenario_name}_hedge_budget"
+                for scenario_name in overlay_scenarios
+                if scenario_name not in {"under_hedged", "fixed_overlay", "over_hedged"}
+            },
+        },
+    )
+    daily_returns = _build_daily_scenario_returns(
+        cfg,
+        monthly_returns,
+        daily_prices,
+        scenario_stock_weights_df,
+        option_daily_contributions,
+    )
 
     prediction_metrics = _compute_prediction_metrics(predictions_list, actuals_list)
     turnover_series = monthly_returns["turnover"]
@@ -423,6 +545,7 @@ def run_walk_forward_backtest(
         turnover_series=turnover_series,
         overlay_turnover_series=overlay_turnover_series,
         options_signals=options_signals.reset_index() if not options_signals.empty else pd.DataFrame(),
+        put_hedge_book=put_hedge_book.reset_index() if not put_hedge_book.empty else pd.DataFrame(),
     )
 
 

@@ -161,8 +161,10 @@ def add_warning_score(monthly_indicators: pd.DataFrame, cfg: OptionsRiskConfig) 
         .rolling(window=cfg.rolling_lookback_months, min_periods=max(12, cfg.rolling_lookback_months // 2))
         .quantile(cfg.score_scaled_extreme_percentile)
     )
-    monthly["lambda_t"] = np.where(monthly["warning_flag"] == 1, cfg.warning_haircut, 1.0)
+    monthly["fixed_hedge_budget"] = np.where(monthly["warning_flag"] == 1, cfg.fixed_hedge_budget_pct_nav, 0.0)
+    monthly["lambda_t"] = 1.0 - monthly["fixed_hedge_budget"]
     monthly["score_scaled_lambda_t"] = 1.0
+    monthly["score_scaled_hedge_budget"] = 0.0
     return monthly
 
 
@@ -229,16 +231,18 @@ def add_market_stress_confirmation(
             (monthly["options_warning_flag"] == 1) & (monthly["market_stress_flag"].fillna(0).astype(int) == 1)
         ).astype(int)
 
-    monthly["lambda_t"] = np.where(monthly["warning_flag"] == 1, cfg.warning_haircut, 1.0)
+    monthly["fixed_hedge_budget"] = np.where(monthly["warning_flag"] == 1, cfg.fixed_hedge_budget_pct_nav, 0.0)
+    monthly["lambda_t"] = 1.0 - monthly["fixed_hedge_budget"]
     confirmed_stress = monthly["market_stress_flag"].fillna(0).astype(int) == 1
     mild = confirmed_stress & (monthly["warning_score"] >= monthly["score_mild_threshold"])
     high = confirmed_stress & (monthly["warning_score"] >= monthly["score_high_threshold"])
     extreme = confirmed_stress & (monthly["warning_score"] >= monthly["score_extreme_threshold"])
 
-    monthly["score_scaled_lambda_t"] = 1.0
-    monthly.loc[mild, "score_scaled_lambda_t"] = cfg.score_scaled_mild_lambda
-    monthly.loc[high, "score_scaled_lambda_t"] = cfg.score_scaled_high_lambda
-    monthly.loc[extreme, "score_scaled_lambda_t"] = cfg.score_scaled_extreme_lambda
+    monthly["score_scaled_hedge_budget"] = 0.0
+    monthly.loc[mild, "score_scaled_hedge_budget"] = cfg.score_scaled_mild_budget_pct_nav
+    monthly.loc[high, "score_scaled_hedge_budget"] = cfg.score_scaled_high_budget_pct_nav
+    monthly.loc[extreme, "score_scaled_hedge_budget"] = cfg.score_scaled_extreme_budget_pct_nav
+    monthly["score_scaled_lambda_t"] = 1.0 - monthly["score_scaled_hedge_budget"]
     monthly["score_scaled_flag"] = (monthly["score_scaled_lambda_t"] < 1.0).astype(int)
     return monthly
 

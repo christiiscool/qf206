@@ -647,8 +647,8 @@ def plot_exposure_multipliers(
     fig, ax = plt.subplots(figsize=(12, 5))
     for label, series in available.items():
         ax.plot(series.index, series.values, linewidth=2, label=label)
-    ax.set_title("Exposure Multiplier Over Time")
-    ax.set_ylabel("Lambda")
+    ax.set_title("Equity Capital Multiplier After Funding Put Hedge")
+    ax.set_ylabel("Equity Allocation")
     ax.set_xlabel("Date")
     ax.set_ylim(0.0, 1.05)
     ax.legend(loc="best")
@@ -720,16 +720,26 @@ def plot_warning_score_vs_hedge_intensity(
     logger = get_logger()
     outputs_dir.mkdir(parents=True, exist_ok=True)
 
-    if options_signals.empty or "warning_score" not in options_signals.columns or "score_scaled_lambda_t" not in options_signals.columns:
+    if options_signals.empty or "warning_score" not in options_signals.columns:
         logger.warning("Score-scaled overlay details unavailable, skipping score-vs-lambda plot")
         return
 
     df = options_signals.copy()
+    if "score_scaled_hedge_budget" in df.columns:
+        y = df["score_scaled_hedge_budget"]
+        ylabel = "Score-scaled Hedge Budget"
+    elif "score_scaled_lambda_t" in df.columns:
+        y = df["score_scaled_lambda_t"]
+        ylabel = "Score-scaled Lambda"
+    else:
+        logger.warning("No hedge-intensity column found, skipping score-vs-lambda plot")
+        return
+
     fig, ax = plt.subplots(figsize=(8, 6))
-    ax.scatter(df["warning_score"], df["score_scaled_lambda_t"], alpha=0.7, color="#2f6c8f")
+    ax.scatter(df["warning_score"], y, alpha=0.7, color="#2f6c8f")
     ax.set_title("Warning Score vs Applied Hedge Intensity")
     ax.set_xlabel("Warning Score")
-    ax.set_ylabel("Score-scaled Lambda")
+    ax.set_ylabel(ylabel)
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
     fig.savefig(outputs_dir / "warning_score_vs_hedge_intensity.png", dpi=150)

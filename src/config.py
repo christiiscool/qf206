@@ -97,16 +97,18 @@ class OptionsRiskConfig:
     warning_z_threshold: float = 1.0
     use_rolling_percentile_threshold: bool = True
     warning_percentile: float = 0.90
-    warning_haircut: float = 0.75
+    put_target_delta_abs: float = 0.25
+    put_target_dte_days: int = 30
+    fixed_hedge_budget_pct_nav: float = 0.005
+    under_hedge_budget_pct_nav: float = 0.0025
+    over_hedge_budget_pct_nav: float = 0.0100
+    hedge_sweep_budget_pct_nav: List[float] = field(default_factory=lambda: [0.0025, 0.0050, 0.0075, 0.0100, 0.0150])
     score_scaled_mild_percentile: float = 0.75
     score_scaled_high_percentile: float = 0.90
     score_scaled_extreme_percentile: float = 0.97
-    score_scaled_mild_lambda: float = 0.95
-    score_scaled_high_lambda: float = 0.85
-    score_scaled_extreme_lambda: float = 0.65
-    under_hedge_haircut: float = 0.90
-    over_hedge_haircut: float = 0.50
-    hedge_sweep_haircuts: List[float] = field(default_factory=lambda: [0.95, 0.90, 0.85, 0.80, 0.75, 0.65, 0.50])
+    score_scaled_mild_budget_pct_nav: float = 0.0025
+    score_scaled_high_budget_pct_nav: float = 0.0050
+    score_scaled_extreme_budget_pct_nav: float = 0.0100
     require_market_confirmation: bool = True
     market_drawdown_trigger: float = -0.08
     market_vol_percentile: float = 0.50
