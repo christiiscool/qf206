@@ -148,8 +148,10 @@ def load_wrds_options_export(path: Path | str, cfg: OptionsRiskConfig) -> pd.Dat
     if not cleaned_chunks:
         raise ValueError(f"No usable option rows found for ticker {cfg.ticker} in {path}")
 
+    # Avoid a full-frame global sort here because the WRDS export is large and
+    # the downstream monthly builders either group explicitly or sort the
+    # smaller working slices they need.
     df = pd.concat(cleaned_chunks, ignore_index=True)
-    df = df.sort_values(["date", "exdate", "cp_flag", "strike_price", "optionid"]).reset_index(drop=True)
 
     logger.info("Loaded %d cleaned %s option rows from %s", len(df), cfg.ticker, path)
     return df

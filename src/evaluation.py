@@ -154,7 +154,7 @@ def build_overlay_scenario_frames(
 def _scenario_monthly_metadata(monthly_returns: pd.DataFrame) -> Dict[str, Dict[str, str]]:
     metadata = {
         "unhedged": {
-            "lambda_col": None,
+            "equity_allocation_col": None,
             "turnover_col": "turnover",
         }
     }
@@ -163,7 +163,7 @@ def _scenario_monthly_metadata(monthly_returns: pd.DataFrame) -> Dict[str, Dict[
             continue
         scenario = column.removesuffix("_ret_net")
         metadata[scenario] = {
-            "lambda_col": f"{scenario}_lambda_t" if f"{scenario}_lambda_t" in monthly_returns.columns else None,
+            "equity_allocation_col": f"{scenario}_equity_allocation" if f"{scenario}_equity_allocation" in monthly_returns.columns else None,
             "turnover_col": f"{scenario}_turnover" if f"{scenario}_turnover" in monthly_returns.columns else None,
         }
     return metadata
@@ -175,25 +175,25 @@ def _operational_stats(
     metadata: Dict[str, str],
 ) -> Dict[str, float]:
     if scenario == "unhedged":
-        lambdas = pd.Series(1.0, index=monthly_returns.index)
-    elif metadata.get("lambda_col") and metadata["lambda_col"] in monthly_returns.columns:
-        lambdas = monthly_returns[metadata["lambda_col"]].fillna(1.0)
+        equity_allocations = pd.Series(1.0, index=monthly_returns.index)
+    elif metadata.get("equity_allocation_col") and metadata["equity_allocation_col"] in monthly_returns.columns:
+        equity_allocations = monthly_returns[metadata["equity_allocation_col"]].fillna(1.0)
     else:
-        lambdas = pd.Series(np.nan, index=monthly_returns.index)
+        equity_allocations = pd.Series(np.nan, index=monthly_returns.index)
 
     if metadata.get("turnover_col") and metadata["turnover_col"] in monthly_returns.columns:
         turnover = monthly_returns[metadata["turnover_col"]].dropna()
     else:
         turnover = pd.Series(dtype=float)
 
-    active_mask = lambdas < 0.999999
-    active_lambdas = lambdas[active_mask]
+    active_mask = equity_allocations < 0.999999
+    active_allocations = equity_allocations[active_mask]
 
     return {
         "ops_activation_count": float(active_mask.sum()),
         "ops_activation_rate": float(active_mask.mean()) if len(active_mask) > 0 else np.nan,
-        "ops_avg_hedge_size_active": float((1.0 - active_lambdas).mean()) if not active_lambdas.empty else 0.0,
-        "ops_avg_exposure_multiplier": float(lambdas.mean()) if not lambdas.empty else np.nan,
+        "ops_avg_hedge_budget_active": float((1.0 - active_allocations).mean()) if not active_allocations.empty else 0.0,
+        "ops_avg_equity_allocation": float(equity_allocations.mean()) if not equity_allocations.empty else np.nan,
         "ops_avg_turnover": float(turnover.mean()) if not turnover.empty else np.nan,
     }
 
@@ -259,7 +259,7 @@ def summarize_focus_hedge_ratios(
     outputs_dir,
 ) -> pd.DataFrame:
     outputs_dir.mkdir(parents=True, exist_ok=True)
-    focus_order = ["unhedged", "under_hedged", "fixed_overlay", "over_hedged", "score_scaled", "vol_benchmark"]
+    focus_order = ["unhedged", "under_hedged", "fixed_overlay", "over_hedged", "score_scaled"]
 
     combined = monthly_summary.add_prefix("monthly_").join(daily_summary.add_prefix("daily_"), how="left")
     focus = combined.loc[[name for name in focus_order if name in combined.index]].copy()
@@ -335,7 +335,7 @@ def summarize_hedge_tradeoff(
 ) -> pd.DataFrame:
     outputs_dir.mkdir(parents=True, exist_ok=True)
 
-    focus = ["unhedged", "under_hedged", "fixed_overlay", "over_hedged", "score_scaled", "vol_benchmark"]
+    focus = ["unhedged", "under_hedged", "fixed_overlay", "over_hedged", "score_scaled"]
     rows = []
     for scenario in focus:
         if scenario not in monthly_summary.index:
@@ -367,8 +367,8 @@ def summarize_hedge_tradeoff(
                 "daily_skewness": float(daily_row.get("tail_skewness", np.nan)),
                 "activation_count": float(monthly_row.get("ops_activation_count", np.nan)),
                 "activation_rate": float(monthly_row.get("ops_activation_rate", np.nan)),
-                "avg_hedge_size_active": float(monthly_row.get("ops_avg_hedge_size_active", np.nan)),
-                "avg_exposure_multiplier": float(monthly_row.get("ops_avg_exposure_multiplier", np.nan)),
+                "avg_hedge_budget_active": float(monthly_row.get("ops_avg_hedge_budget_active", np.nan)),
+                "avg_equity_allocation": float(monthly_row.get("ops_avg_equity_allocation", np.nan)),
             }
         )
 

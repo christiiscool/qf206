@@ -378,7 +378,7 @@ def _drawdown_curve(returns: pd.Series) -> pd.Series:
 def _overlay_monthly_scenarios(monthly_returns: pd.DataFrame) -> pd.DataFrame:
     scenario_df = pd.DataFrame(index=monthly_returns.index)
     scenario_df["Unhedged"] = monthly_returns["ret_net"]
-    preferred_order = ["under_hedged", "fixed_overlay", "over_hedged", "score_scaled", "vol_benchmark"]
+    preferred_order = ["under_hedged", "fixed_overlay", "over_hedged", "score_scaled"]
 
     for scenario_name in preferred_order:
         column = f"{scenario_name}_ret_net"
@@ -402,8 +402,6 @@ def _main_overlay_returns(monthly_returns: pd.DataFrame) -> pd.DataFrame:
     mapping = {
         "Fixed overlay": "fixed_overlay_ret_net",
         "Score-scaled overlay": "score_scaled_ret_net",
-        "Vol benchmark": "vol_benchmark_ret_net",
-        "Hybrid overlay": "hybrid_overlay_ret_net",
     }
     for label, column in mapping.items():
         if column in monthly_returns.columns:
@@ -600,7 +598,7 @@ def plot_daily_pnl_distributions(
         logger.warning("Daily returns unavailable, skipping daily distribution plot")
         return
 
-    preferred = ["unhedged", "fixed_overlay", "score_scaled", "vol_benchmark"]
+    preferred = ["unhedged", "fixed_overlay", "score_scaled", "over_hedged"]
     selected = [col for col in preferred if col in daily_returns.columns]
     plot_df = daily_returns[selected] if selected else daily_returns
 
@@ -634,10 +632,9 @@ def plot_exposure_multipliers(
     outputs_dir.mkdir(parents=True, exist_ok=True)
 
     columns = {
-        "Fixed overlay": "fixed_overlay_lambda_t",
-        "Score-scaled overlay": "score_scaled_lambda_t",
-        "Vol benchmark": "vol_benchmark_lambda_t",
-        "Hybrid overlay": "hybrid_overlay_lambda_t",
+        "Fixed overlay": "fixed_overlay_equity_allocation",
+        "Score-scaled overlay": "score_scaled_equity_allocation",
+        "Over-hedged": "over_hedged_equity_allocation",
     }
     available = {label: monthly_returns[col] for label, col in columns.items() if col in monthly_returns.columns}
     if not available:
@@ -721,18 +718,15 @@ def plot_warning_score_vs_hedge_intensity(
     outputs_dir.mkdir(parents=True, exist_ok=True)
 
     if options_signals.empty or "warning_score" not in options_signals.columns:
-        logger.warning("Score-scaled overlay details unavailable, skipping score-vs-lambda plot")
+        logger.warning("Score-scaled overlay details unavailable, skipping score-vs-budget plot")
         return
 
     df = options_signals.copy()
     if "score_scaled_hedge_budget" in df.columns:
         y = df["score_scaled_hedge_budget"]
         ylabel = "Score-scaled Hedge Budget"
-    elif "score_scaled_lambda_t" in df.columns:
-        y = df["score_scaled_lambda_t"]
-        ylabel = "Score-scaled Lambda"
     else:
-        logger.warning("No hedge-intensity column found, skipping score-vs-lambda plot")
+        logger.warning("No hedge-intensity column found, skipping score-vs-budget plot")
         return
 
     fig, ax = plt.subplots(figsize=(8, 6))

@@ -58,7 +58,7 @@ def _compute_vol_scalar(history: list[float], cfg: PipelineConfig) -> float:
 def _load_options_context(cfg: PipelineConfig, spy_daily: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     logger = get_logger()
     if not cfg.options_risk.enabled:
-        empty = pd.DataFrame(columns=["month_end", "warning_flag", "warning_score", "lambda_t"])
+        empty = pd.DataFrame(columns=["month_end", "warning_flag", "warning_score", "fixed_overlay_equity_allocation"])
         return empty, pd.DataFrame(), pd.DataFrame()
     if cfg.options_risk.options_data_path is None:
         raise ValueError("Options risk overlay enabled but no options_data_path is configured.")
@@ -103,19 +103,6 @@ def _overlay_scenarios(cfg: PipelineConfig) -> Dict[str, float]:
         scenarios[label] = float(budget)
 
     return dict(sorted(scenarios.items(), key=lambda item: item[1]))
-
-
-def _compute_vol_benchmark_lambda(base_history: list[float], cfg: PipelineConfig) -> float:
-    lookback = cfg.options_risk.vol_benchmark_lookback_months
-    if len(base_history) < lookback:
-        return 1.0
-
-    realized_vol = np.std(base_history[-lookback:], ddof=1) * np.sqrt(12.0)
-    if not np.isfinite(realized_vol) or realized_vol <= 0:
-        return 1.0
-
-    raw_lambda = cfg.options_risk.vol_benchmark_target_vol / realized_vol
-    return float(np.clip(raw_lambda, cfg.options_risk.vol_benchmark_min_lambda, 1.0))
 
 
 def _build_option_daily_contributions(
@@ -272,8 +259,6 @@ def run_walk_forward_backtest(
         "unhedged": {},
         **{name: {} for name in _overlay_scenarios(cfg)},
         "score_scaled": {},
-        "vol_benchmark": {},
-        "hybrid_overlay": {},
     }
 
     predictions_list = []
@@ -284,8 +269,6 @@ def run_walk_forward_backtest(
         "unhedged": None,
         **{name: None for name in _overlay_scenarios(cfg)},
         "score_scaled": None,
-        "vol_benchmark": None,
-        "hybrid_overlay": None,
     }
     prev_warning_flag = 0
     base_returns_history: list[float] = []
@@ -293,8 +276,6 @@ def run_walk_forward_backtest(
         "unhedged": [],
         **{name: [] for name in _overlay_scenarios(cfg)},
         "score_scaled": [],
-        "vol_benchmark": [],
-        "hybrid_overlay": [],
     }
     overlay_scenarios = _overlay_scenarios(cfg)
 
@@ -359,15 +340,13 @@ def run_walk_forward_backtest(
             if warning_row is not None and "fixed_hedge_budget" in warning_row.index and pd.notna(warning_row["fixed_hedge_budget"])
             else 0.0
         )
-        fixed_lambda_t = 1.0 - fixed_hedge_budget
+        fixed_equity_allocation = 1.0 - fixed_hedge_budget
         score_scaled_hedge_budget = (
             float(warning_row["score_scaled_hedge_budget"])
             if warning_row is not None and "score_scaled_hedge_budget" in warning_row.index and pd.notna(warning_row["score_scaled_hedge_budget"])
             else 0.0
         )
-        score_scaled_lambda_t = 1.0 - score_scaled_hedge_budget
-        vol_benchmark_lambda_t = _compute_vol_benchmark_lambda(base_returns_history, cfg)
-        hybrid_overlay_lambda_t = vol_benchmark_lambda_t * score_scaled_lambda_t
+        score_scaled_equity_allocation = 1.0 - score_scaled_hedge_budget
         option_trade_row = put_hedge_book.loc[month] if not put_hedge_book.empty and month in put_hedge_book.index else None
         if isinstance(option_trade_row, pd.DataFrame):
             option_trade_row = option_trade_row.iloc[0]
@@ -386,11 +365,9 @@ def run_walk_forward_backtest(
             "warning_score": warning_score,
             "base_vol_scalar": base_vol_scalar,
             "fixed_overlay_hedge_budget": fixed_hedge_budget,
-            "fixed_overlay_lambda_t": fixed_lambda_t,
+            "fixed_overlay_equity_allocation": fixed_equity_allocation,
             "score_scaled_hedge_budget": score_scaled_hedge_budget,
-            "score_scaled_lambda_t": score_scaled_lambda_t,
-            "vol_benchmark_lambda_t": vol_benchmark_lambda_t,
-            "hybrid_overlay_lambda_t": hybrid_overlay_lambda_t,
+            "score_scaled_equity_allocation": score_scaled_equity_allocation,
             "put_option_trade_available": option_trade_available,
             "put_option_unit_total_return": option_unit_total_return,
         }
@@ -412,17 +389,13 @@ def run_walk_forward_backtest(
                 for scenario_name, budget in overlay_scenarios.items()
             },
             "score_scaled": score_scaled_hedge_budget if option_trade_available == 1 else 0.0,
-            "vol_benchmark": 0.0,
-            "hybrid_overlay": score_scaled_hedge_budget if option_trade_available == 1 else 0.0,
         }
-        scenario_lambdas = {
-            **{scenario_name: 1.0 - budget for scenario_name, budget in scenario_budgets.items() if scenario_name != "vol_benchmark"},
-            "vol_benchmark": vol_benchmark_lambda_t,
-            "hybrid_overlay": hybrid_overlay_lambda_t,
+        scenario_equity_allocations = {
+            scenario_name: 1.0 - budget for scenario_name, budget in scenario_budgets.items()
         }
 
-        for scenario_name, scenario_lambda in scenario_lambdas.items():
-            scenario_weights = base_weights * scenario_lambda
+        for scenario_name, scenario_equity_allocation in scenario_equity_allocations.items():
+            scenario_weights = base_weights * scenario_equity_allocation
             scenario_weight_records[scenario_name][month] = scenario_weights
 
             prev_weights = prev_scenario_weights[scenario_name]
@@ -441,7 +414,7 @@ def run_walk_forward_backtest(
             scenario_vol_scalar = _compute_vol_scalar(scenario_returns_history[scenario_name], cfg)
             scenario_ret_net = scenario_ret_net_pre_vol * scenario_vol_scalar
 
-            record[f"{scenario_name}_lambda_t"] = scenario_lambda
+            record[f"{scenario_name}_equity_allocation"] = scenario_equity_allocation
             record[f"{scenario_name}_hedge_budget"] = option_budget
             record[f"{scenario_name}_stock_ret_gross"] = stock_ret_gross
             record[f"{scenario_name}_option_ret_gross"] = option_ret_gross
@@ -457,7 +430,7 @@ def run_walk_forward_backtest(
         record["ret_gross_overlay"] = record["fixed_overlay_ret_gross"]
         record["ret_net_overlay"] = record["fixed_overlay_ret_net"]
         record["overlay_turnover"] = record["fixed_overlay_turnover"]
-        record["lambda_t"] = record["fixed_overlay_lambda_t"]
+        record["overlay_equity_allocation"] = record["fixed_overlay_equity_allocation"]
         record["hedge_budget"] = record["fixed_overlay_hedge_budget"]
         record["regime_switch_cost"] = record["fixed_overlay_regime_switch_cost"]
         record["overlay_vol_scalar"] = record["fixed_overlay_vol_scalar"]
@@ -466,7 +439,7 @@ def run_walk_forward_backtest(
 
         prev_base_weights = base_weights.copy()
         prev_scenario_weights["unhedged"] = base_weights.copy()
-        for scenario_name in scenario_lambdas:
+        for scenario_name in scenario_equity_allocations:
             prev_scenario_weights[scenario_name] = scenario_weight_records[scenario_name][month].copy()
         prev_warning_flag = warning_flag
         base_returns_history.append(float(base_ret_net_pre_vol))
@@ -510,7 +483,6 @@ def run_walk_forward_backtest(
             "fixed_overlay": "fixed_overlay_hedge_budget",
             "over_hedged": "over_hedged_hedge_budget",
             "score_scaled": "score_scaled_hedge_budget",
-            "hybrid_overlay": "hybrid_overlay_hedge_budget",
             **{
                 scenario_name: f"{scenario_name}_hedge_budget"
                 for scenario_name in overlay_scenarios

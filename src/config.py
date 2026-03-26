@@ -74,18 +74,6 @@ class BacktestConfig:
 
 
 @dataclass
-class OverlayConfig:
-    enabled: bool = True
-    realized_vol_lookback_days: int = 63
-    vol_zscore_trigger: float = 1.0
-    max_drawdown_trigger: float = 0.15
-    monthly_hedge_premium_bps: float = 30.0
-    hedge_horizon_months: int = 1
-    put_spread_floor: float = -0.25
-    put_spread_cap: float = -0.05
-
-
-@dataclass
 class OptionsRiskConfig:
     enabled: bool = True
     options_data_path: Optional[Path] = Path(r"C:\Users\chris\Downloads\hhgzhvclobjfzv9d_csv.zip")
@@ -112,9 +100,6 @@ class OptionsRiskConfig:
     require_market_confirmation: bool = True
     market_drawdown_trigger: float = -0.08
     market_vol_percentile: float = 0.50
-    vol_benchmark_lookback_months: int = 12
-    vol_benchmark_target_vol: float = 0.16
-    vol_benchmark_min_lambda: float = 0.65
     state_change_cost_bps: float = 2.0
     chunksize: int = 250_000
 
@@ -143,7 +128,6 @@ class PipelineConfig:
     features: FeatureConfig = field(default_factory=FeatureConfig)
     models: ModelConfig = field(default_factory=ModelConfig)
     backtest: BacktestConfig = field(default_factory=BacktestConfig)
-    overlay: OverlayConfig = field(default_factory=OverlayConfig)
     options_risk: OptionsRiskConfig = field(default_factory=OptionsRiskConfig)
     factor_timing: FactorTimingConfig = field(default_factory=FactorTimingConfig)
     demo_tickers: List[str] = field(
