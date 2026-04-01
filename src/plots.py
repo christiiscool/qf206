@@ -806,3 +806,28 @@ def plot_left_tail_daily_distributions(
     fig.savefig(outputs_dir / "daily_pnl_left_tail_focus.png", dpi=150)
     plt.close(fig)
     logger.info("Saved left-tail daily PnL plot")
+
+
+def plot_strategy_vs_benchmarks(
+    benchmark_monthly_returns: pd.DataFrame,
+    outputs_dir: Path,
+) -> None:
+    logger = get_logger()
+    outputs_dir.mkdir(parents=True, exist_ok=True)
+
+    if benchmark_monthly_returns.empty:
+        logger.warning("Benchmark comparison returns unavailable, skipping benchmark plot")
+        return
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    for label, series in benchmark_monthly_returns.items():
+        ax.plot(series.index, _equity_curve(series).values, linewidth=2, label=label.replace("_", " ").title())
+    ax.set_title("Strategy vs SPY and Equal-Weight Benchmarks")
+    ax.set_ylabel("Cumulative Growth")
+    ax.set_xlabel("Date")
+    ax.legend(loc="best")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(outputs_dir / "strategy_vs_benchmark_equity.png", dpi=150)
+    plt.close(fig)
+    logger.info("Saved strategy vs benchmark equity plot")

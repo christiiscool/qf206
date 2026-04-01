@@ -376,3 +376,92 @@ def summarize_hedge_tradeoff(
     summary.to_csv(outputs_dir / "hedge_tradeoff_summary.csv")
     return summary
 
+
+def build_benchmark_return_frames(
+    panel: pd.DataFrame,
+    daily_prices: pd.DataFrame,
+    spy_daily: pd.DataFrame,
+    strategy_monthly_index: pd.Index,
+    strategy_daily_index: Optional[pd.Index],
+    tickers: list[str],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    monthly = pd.DataFrame(index=pd.to_datetime(strategy_monthly_index))
+    daily = pd.DataFrame(index=pd.to_datetime(strategy_daily_index)) if strategy_daily_index is not None and len(strategy_daily_index) > 0 else pd.DataFrame()
+
+    panel_slice = panel[panel["ticker"].isin(tickers)].copy()
+    if not panel_slice.empty and "forward_1m_return" in panel_slice.columns:
+        equal_weight_monthly = panel_slice.groupby("month_end")["forward_1m_return"].mean().sort_index()
+        monthly["equal_weight"] = equal_weight_monthly.reindex(monthly.index)
+
+    spy_m = spy_daily.copy().sort_values("date")
+    spy_m["date"] = pd.to_datetime(spy_m["date"])
+    spy_m = spy_m.set_index("date")
+    spy_monthly = spy_m["adj_close"].resample("M").last().pct_change(fill_method=None)
+    monthly["spy_benchmark"] = spy_monthly.reindex(monthly.index)
+
+    if not daily.empty:
+        price_col = "adj_close" if "adj_close" in daily_prices.columns else "close"
+        prices = daily_prices[daily_prices["ticker"].isin(tickers)].copy()
+        prices["date"] = pd.to_datetime(prices["date"])
+        equal_weight_daily = (
+            prices.pivot_table(index="date", columns="ticker", values=price_col, aggfunc="last")
+            .sort_index()
+            .pct_change(fill_method=None)
+            .mean(axis=1)
+        )
+        daily["equal_weight"] = equal_weight_daily.reindex(daily.index)
+
+        spy_daily_ret = spy_m["adj_close"].pct_change(fill_method=None)
+        daily["spy_benchmark"] = spy_daily_ret.reindex(daily.index)
+
+    return monthly, daily
+
+
+def summarize_strategy_vs_benchmarks(
+    monthly_returns: pd.DataFrame,
+    daily_returns: pd.DataFrame,
+    benchmark_monthly: pd.DataFrame,
+    benchmark_daily: pd.DataFrame,
+    outputs_dir,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    outputs_dir.mkdir(parents=True, exist_ok=True)
+
+    monthly_series = pd.DataFrame(index=monthly_returns.index)
+    monthly_series["strategy_unhedged"] = monthly_returns["ret_net"]
+    for scenario in ["fixed_overlay", "score_scaled", "over_hedged"]:
+        col = f"{scenario}_ret_net"
+        if col in monthly_returns.columns:
+            monthly_series[scenario] = monthly_returns[col]
+    monthly_series = monthly_series.join(benchmark_monthly, how="left")
+
+    monthly_summary = pd.DataFrame(
+        {
+            name: _performance_stats(series, periods_per_year=12)
+            for name, series in monthly_series.items()
+        }
+    ).T
+    monthly_summary.index.name = "portfolio"
+    monthly_summary.to_csv(outputs_dir / "strategy_vs_benchmark_monthly_comparison.csv")
+    monthly_series.to_csv(outputs_dir / "strategy_vs_benchmark_monthly_returns.csv", index=True)
+
+    if daily_returns is not None and not daily_returns.empty:
+        daily_series = pd.DataFrame(index=daily_returns.index)
+        daily_series["strategy_unhedged"] = daily_returns["unhedged"]
+        for scenario in ["fixed_overlay", "score_scaled", "over_hedged"]:
+            if scenario in daily_returns.columns:
+                daily_series[scenario] = daily_returns[scenario]
+        daily_series = daily_series.join(benchmark_daily, how="left")
+        daily_summary = pd.DataFrame(
+            {
+                name: _performance_stats(series, periods_per_year=252)
+                for name, series in daily_series.items()
+            }
+        ).T
+        daily_summary.index.name = "portfolio"
+        daily_summary.to_csv(outputs_dir / "strategy_vs_benchmark_daily_comparison.csv")
+        daily_series.to_csv(outputs_dir / "strategy_vs_benchmark_daily_returns.csv", index=True)
+    else:
+        daily_summary = pd.DataFrame()
+
+    return monthly_summary, daily_summary
+

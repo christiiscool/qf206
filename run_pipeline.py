@@ -4,6 +4,8 @@ import argparse
 import sys
 from pathlib import Path
 
+import pandas as pd
+
 ROOT = Path(__file__).resolve().parent
 if str(ROOT / "src") not in sys.path:
     sys.path.append(str(ROOT / "src"))
@@ -11,11 +13,13 @@ if str(ROOT / "src") not in sys.path:
 from src.config import get_default_config  # noqa: E402
 from src.data_download import download_ohlcv  # noqa: E402
 from src.evaluation import (  # noqa: E402
+    build_benchmark_return_frames,
     summarize_backtest,
     summarize_downturn_days,
     summarize_focus_hedge_ratios,
     summarize_hedge_tradeoff,
     summarize_overlay_scenarios,
+    summarize_strategy_vs_benchmarks,
 )
 from src.features import build_monthly_feature_panel  # noqa: E402
 from src.labels import add_forward_return_and_labels  # noqa: E402
@@ -37,6 +41,7 @@ from src.plots import (  # noqa: E402
     plot_overlay_scenario_metrics,
     plot_rolling_sharpe,
     plot_stock_weights_over_time,
+    plot_strategy_vs_benchmarks,
     plot_warning_score,
     plot_warning_score_vs_hedge_intensity,
 )
@@ -109,6 +114,21 @@ def main() -> None:
         summary_dir,
         bt_result.daily_returns,
     )
+    benchmark_monthly, benchmark_daily = build_benchmark_return_frames(
+        labeled_panel,
+        prices,
+        spy,
+        bt_df.index,
+        bt_result.daily_returns.index if not bt_result.daily_returns.empty else None,
+        cfg.demo_tickers,
+    )
+    benchmark_monthly_summary, benchmark_daily_summary = summarize_strategy_vs_benchmarks(
+        bt_df,
+        bt_result.daily_returns,
+        benchmark_monthly,
+        benchmark_daily,
+        summary_dir,
+    )
     summarize_focus_hedge_ratios(monthly_overlay_summary, daily_overlay_summary, summary_dir)
     downturn_summary = summarize_downturn_days(bt_result.daily_returns, spy, summary_dir)
     summarize_hedge_tradeoff(monthly_overlay_summary, daily_overlay_summary, downturn_summary, summary_dir)
@@ -129,6 +149,10 @@ def main() -> None:
     plot_focus_hedge_ratio_equity(bt_df, summary_dir)
     plot_overlay_scenario_equity(bt_df, summary_dir)
     plot_overlay_scenario_metrics(monthly_overlay_summary, daily_overlay_summary, summary_dir)
+    plot_strategy_vs_benchmarks(
+        pd.read_csv(summary_dir / "strategy_vs_benchmark_monthly_returns.csv", index_col=0, parse_dates=True),
+        summary_dir,
+    )
     plot_daily_pnl_distributions(bt_result.daily_returns, summary_dir)
     plot_left_tail_daily_distributions(bt_result.daily_returns, summary_dir)
     plot_warning_score_vs_hedge_intensity(bt_result.options_signals, summary_dir)
@@ -221,6 +245,10 @@ def main() -> None:
 
     if not bt_result.daily_returns.empty:
         _write_csv_with_fallback(bt_result.daily_returns, summary_dir / "daily_pnl_returns.csv", logger, index=True)
+
+    _write_csv_with_fallback(benchmark_monthly_summary, summary_dir / "strategy_vs_benchmark_monthly_summary.csv", logger, index=True)
+    if not benchmark_daily_summary.empty:
+        _write_csv_with_fallback(benchmark_daily_summary, summary_dir / "strategy_vs_benchmark_daily_summary.csv", logger, index=True)
 
     logger.info("=" * 60)
     logger.info("Pipeline completed successfully!")
